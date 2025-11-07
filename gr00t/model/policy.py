@@ -292,7 +292,6 @@ class Gr00tPolicy(BasePolicy):
             )
 
         # 2) 로드
-        import json
         with open(metadata_path, "r") as f:
             meta = json.load(f)
 
