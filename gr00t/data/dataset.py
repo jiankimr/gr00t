@@ -354,8 +354,28 @@ class LeRobotSingleDataset(Dataset):
                         state_action_meta.start,
                         state_action_meta.end,
                     )
-                    stat = np.array(le_statistics[le_modality][stat_name])
-                    dataset_statistics[our_modality][subkey][stat_name] = stat[indices].tolist()
+                    stat_value = le_statistics[le_modality][stat_name]
+                    # Handle both scalar and array statistics
+                    if isinstance(stat_value, (int, float)):
+                        # Scalar value - keep as is
+                        dataset_statistics[our_modality][subkey][stat_name] = stat_value
+                    elif isinstance(stat_value, (list, np.ndarray)):
+                        # Array value - convert to numpy and index
+                        stat = np.array(stat_value)
+                        # Check if stat is actually a scalar (0-d array) or single value
+                        if stat.ndim == 0 or (stat.ndim == 1 and len(stat) == 1):
+                            # Single value - use it for all indices
+                            dataset_statistics[our_modality][subkey][stat_name] = float(stat) if stat.ndim == 0 else float(stat[0])
+                        else:
+                            # Array with multiple values - index it
+                            dataset_statistics[our_modality][subkey][stat_name] = stat[indices].tolist()
+                    else:
+                        # Fallback: try to convert to array
+                        stat = np.array(stat_value)
+                        if stat.ndim == 0 or (stat.ndim == 1 and len(stat) == 1):
+                            dataset_statistics[our_modality][subkey][stat_name] = float(stat) if stat.ndim == 0 else float(stat[0])
+                        else:
+                            dataset_statistics[our_modality][subkey][stat_name] = stat[indices].tolist()
 
         # 3. Full dataset metadata
         metadata = DatasetMetadata(
@@ -543,16 +563,75 @@ class LeRobotSingleDataset(Dataset):
         return data
 
     def get_trajectory_data(self, trajectory_id: int) -> pd.DataFrame:
-        """Get the data for a trajectory."""
+        """Get the data for a trajectory.
+        
+        This method supports both standard format (SO-101 style) and LIBERO format:
+        - Standard: chunk-001/episode_001194.parquet (one episode per file)
+        - LIBERO: chunk-000/file-294.parquet (multiple episodes per file)
+        """
         if self.curr_traj_id == trajectory_id and self.curr_traj_data is not None:
             return self.curr_traj_data
         else:
             chunk_index = self.get_episode_chunk(trajectory_id)
+            
+            # Try to format with episode_chunk and episode_index first (standard format)
+            try:
+                parquet_path = self.dataset_path / self.data_path_pattern.format(
+                    episode_chunk=chunk_index, episode_index=trajectory_id
+                )
+                if parquet_path.exists():
+                    df = pd.read_parquet(parquet_path)
+                    # If the file exists but doesn't contain the episode, search for it
+                    if "episode_index" in df.columns and trajectory_id in df["episode_index"].values:
+                        self.curr_traj_id = trajectory_id
+                        self.curr_traj_data = df[df["episode_index"] == trajectory_id].reset_index(drop=True)
+                        return self.curr_traj_data
+            except KeyError:
+                pass
+            
+            # Fallback: Try chunk_index and file_index format (LIBERO format)
+            # For datasets like LIBERO where episodes are distributed across files within chunks,
+            # we need to search all chunks, not just the calculated one
+            try:
+                # First try the calculated chunk
+                chunk_dir = self.dataset_path / f"data/chunk-{chunk_index:03d}"
+                if chunk_dir.exists():
+                    for file_path in sorted(chunk_dir.glob("file-*.parquet")):
+                        df = pd.read_parquet(file_path)
+                        if "episode_index" in df.columns and trajectory_id in df["episode_index"].values:
+                            self.curr_traj_id = trajectory_id
+                            self.curr_traj_data = df[df["episode_index"] == trajectory_id].reset_index(drop=True)
+                            return self.curr_traj_data
+                
+                # If not found in calculated chunk, search all chunks
+                # This handles cases where chunk_size in info.json doesn't match actual file distribution
+                data_dir = self.dataset_path / "data"
+                if data_dir.exists():
+                    for chunk_dir in sorted(data_dir.glob("chunk-*")):
+                        # Skip the chunk we already checked
+                        if chunk_dir.name == f"chunk-{chunk_index:03d}":
+                            continue
+                        for file_path in sorted(chunk_dir.glob("file-*.parquet")):
+                            df = pd.read_parquet(file_path)
+                            if "episode_index" in df.columns and trajectory_id in df["episode_index"].values:
+                                self.curr_traj_id = trajectory_id
+                                self.curr_traj_data = df[df["episode_index"] == trajectory_id].reset_index(drop=True)
+                                return self.curr_traj_data
+            except Exception as e:
+                pass
+            
+            # If still not found, try the original format
             parquet_path = self.dataset_path / self.data_path_pattern.format(
-                episode_chunk=chunk_index, episode_index=trajectory_id
+                chunk_index=chunk_index, file_index=trajectory_id
             )
-            assert parquet_path.exists(), f"Parquet file not found at {parquet_path}"
-            return pd.read_parquet(parquet_path)
+            if parquet_path.exists():
+                df = pd.read_parquet(parquet_path)
+                if "episode_index" in df.columns and trajectory_id in df["episode_index"].values:
+                    self.curr_traj_id = trajectory_id
+                    self.curr_traj_data = df[df["episode_index"] == trajectory_id].reset_index(drop=True)
+                    return self.curr_traj_data
+            
+            raise FileNotFoundError(f"Could not find trajectory {trajectory_id} in any parquet file")
 
     def get_trajectory_index(self, trajectory_id: int) -> int:
         """Get the index of the trajectory in the dataset by the trajectory ID.
@@ -627,9 +706,19 @@ class LeRobotSingleDataset(Dataset):
         original_key = self.lerobot_modality_meta.video[key].original_key
         if original_key is None:
             original_key = key
-        video_filename = self.video_path_pattern.format(
-            episode_chunk=chunk_index, episode_index=trajectory_id, video_key=original_key
-        )
+        try:
+            video_filename = self.video_path_pattern.format(
+                episode_chunk=chunk_index, episode_index=trajectory_id, video_key=original_key
+            )
+        except KeyError:
+            # Fallback for datasets with different video path patterns (e.g., LIBERO)
+            try:
+                video_filename = self.video_path_pattern.format(
+                    chunk_index=chunk_index, file_index=trajectory_id, video_key=original_key
+                )
+            except KeyError:
+                # Return a non-existent path that will trigger parquet image loading
+                return self.dataset_path / "videos" / f"episode_{trajectory_id}" / f"{original_key}.mp4"
         return self.dataset_path / video_filename
 
     def get_video(
@@ -661,7 +750,98 @@ class LeRobotSingleDataset(Dataset):
         assert key.startswith("video."), f"Video key must start with 'video.', got {key}"
         # Get the sub-key
         key = key.replace("video.", "")
+        
+        # OPTIMIZATION: Check for pre-converted NPZ files first (offline conversion)
+        # This avoids PNG decoding during training (massive speedup)
+        original_key = self.lerobot_modality_meta.video[key].original_key
+        if original_key is None:
+            if key.startswith("observation.images."):
+                original_key = key
+            else:
+                original_key = f"observation.images.{key}"
+        
+        # Convert key to safe filename (replace dots with underscores)
+        safe_key = original_key.replace('.', '_')
+        npz_path = self.dataset_path / "videos_npz" / f"episode_{trajectory_id:06d}_{safe_key}.npz"
+        
+        # DEBUG: Print once per process to verify path
+        if not hasattr(self, '_npz_debug_printed'):
+            print(f"[DATASET DEBUG] NPZ path example: {npz_path}")
+            print(f"[DATASET DEBUG] NPZ exists: {npz_path.exists()}")
+            self._npz_debug_printed = True
+        
+        if npz_path.exists():
+            # Load pre-converted NPZ file (FAST PATH)
+            # Use mmap_mode for memory efficiency with multiple workers
+            npz_data = np.load(npz_path, mmap_mode='r')
+            all_images = npz_data['images']  # Shape: (T, H, W, C)
+            # Select only the required frames (critical: must use step_indices)
+            return all_images[step_indices]
+        
+        # DEBUG: Warn when falling back to slow path
+        if not hasattr(self, '_npz_fallback_warned'):
+            print(f"[DATASET WARNING] NPZ not found, falling back to PNG decoding for episode {trajectory_id}, key={key}, safe_key={safe_key}")
+            self._npz_fallback_warned = True
+        
+        # Fallback to original video file or parquet
         video_path = self.get_video_path(trajectory_id, key)
+        
+        # Check if video file exists
+        if not video_path.exists():
+            # If video doesn't exist, check if we can use images from parquet
+            # Some datasets (like HuggingFaceVLA/libero) store images directly in parquet files
+            if self.curr_traj_data is not None:
+                # Get the original key from modality metadata
+                original_key = self.lerobot_modality_meta.video[key].original_key
+                if original_key is None:
+                    # Fallback: try common patterns
+                    if key.startswith("observation.images."):
+                        image_key = key
+                    else:
+                        image_key = f"observation.images.{key}"
+                else:
+                    image_key = original_key
+                
+                # Try to get images from parquet data
+                if image_key in self.curr_traj_data.columns:
+                    # Get images from parquet
+                    images = self.curr_traj_data[image_key].iloc[step_indices].values
+                    # Convert to numpy array if needed
+                    if len(images) > 0:
+                        # Handle different image formats
+                        if isinstance(images[0], dict):
+                            # Image stored as dict with 'bytes' key (HuggingFace format)
+                            import cv2
+                            decoded_images = []
+                            for img_dict in images:
+                                if 'bytes' in img_dict:
+                                    img_bytes = img_dict['bytes']
+                                    # Use OpenCV for faster decoding (3-5x faster than PIL)
+                                    img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                                    np_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+                                    # Convert BGR to RGB (OpenCV uses BGR by default)
+                                    np_img = cv2.cvtColor(np_img, cv2.COLOR_BGR2RGB)
+                                    decoded_images.append(np_img)
+                                else:
+                                    raise ValueError(f"Image dict does not contain 'bytes' key: {img_dict.keys()}")
+                            return np.stack(decoded_images)
+                        elif isinstance(images[0], np.ndarray):
+                            return np.stack(images)
+                        elif hasattr(images[0], 'numpy'):
+                            return np.stack([img.numpy() if hasattr(img, 'numpy') else img for img in images])
+                        elif hasattr(images[0], '__array__'):
+                            return np.stack([np.array(img) for img in images])
+                        else:
+                            return np.array(images)
+            
+            # If no fallback available, raise informative error
+            raise FileNotFoundError(
+                f"Video file not found at {video_path} and images not found in parquet. "
+                f"Please ensure videos are downloaded or check the video_path pattern in info.json. "
+                f"Expected pattern: {self.video_path_pattern}. "
+                f"Tried image key: {image_key if 'image_key' in locals() else 'N/A'}"
+            )
+        
         # Get the action/state timestamps for each frame in the video
         assert self.curr_traj_data is not None, f"No data found for {trajectory_id=}"
         assert "timestamp" in self.curr_traj_data.columns, f"No timestamp found in {trajectory_id=}"

@@ -881,6 +881,8 @@ class AgibotGenie1DataConfig:
 
 
 class LiberoDataConfig:
+    """Data configuration for LIBERO dataset."""
+    
     video_keys = [
         "video.front_view",
         "video.left_wrist_view",
@@ -888,7 +890,8 @@ class LiberoDataConfig:
     state_keys = [
         "state.eef_pos_absolute",
         "state.eef_rot_absolute",
-        "state.gripper_close",
+        "state.gripper_left_finger",
+        "state.gripper_right_finger",
     ]
     action_keys = [
         "action.eef_pos_delta",
@@ -943,7 +946,8 @@ class LiberoDataConfig:
                 normalization_modes={
                     "state.eef_pos_absolute": "min_max",
                     "state.eef_rot_absolute": "min_max",
-                    "state.gripper_close": "min_max",
+                    "state.gripper_left_finger": "min_max",
+                    "state.gripper_right_finger": "min_max",
                 },
                 target_rotations={
                     "state.eef_rot_absolute": "rotation_6d",
@@ -974,6 +978,30 @@ class LiberoDataConfig:
         return ComposedModalityTransform(transforms=transforms)
 
 
+class LiberoNoisyDataConfig(LiberoDataConfig):
+    """
+    LIBERO config with noise injection to action.eef_pos_delta[0].
+    Based on LIBERO_GROOT_TRAINING_GUIDE.md Section 5.1 (Noisy Version)
+    """
+
+    def transform(self):
+        from gr00t.data.transform.noise import ActionNoiseTransform
+
+        base_transforms = super().transform().transforms
+
+        noise_transform = ActionNoiseTransform(
+            apply_to=["action.eef_pos_delta"],
+            target_dim=0,  # x-axis (eef_pos_delta[0])
+            pattern=[1.0, 1.0, -1.0, -1.0],  # ++-- pattern
+            amplitude=0.3,  # Increased from 0.25 to 0.3
+            clip_range=(-1.0, 1.0),
+        )
+
+        # Insert noise transform before GR00TTransform
+        transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+        return ComposedModalityTransform(transforms=transforms)
+
+
 ###########################################################################################
 
 DATA_CONFIG_MAP = {
@@ -990,4 +1018,5 @@ DATA_CONFIG_MAP = {
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
     "libero": LiberoDataConfig(),
+    "libero_noisy": LiberoNoisyDataConfig(),
 }
