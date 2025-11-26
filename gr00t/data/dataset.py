@@ -168,6 +168,78 @@ class LeRobotSingleDataset(Dataset):
 
         # Check if the dataset is valid
         self._check_integrity()
+        
+        # Pre-load all episodes to RAM (for fast training)
+        self._preload_all_episodes_to_ram()
+
+    def _preload_all_episodes_to_ram(self):
+        """Pre-load all episodes to RAM once for maximum speed."""
+        from tqdm import tqdm
+        
+        print("\n" + "="*70)
+        print("🚀 PRE-LOADING ALL EPISODES TO RAM...")
+        print("="*70)
+        
+        # Initialize caches if not already present
+        if not hasattr(self, '_unified_npz_cache'):
+            self._unified_npz_cache = {}
+        if not hasattr(self, '_episode_ram_cache'):
+            self._episode_ram_cache = {}
+        if not hasattr(self, '_unified_warned'):
+            self._unified_warned = set()
+        
+        # Check for unified NPZ files
+        video_keys = list(self.lerobot_modality_meta.video.keys())
+        if not video_keys:
+            print("⚠️  No video modalities found, skipping preload")
+            return
+        
+        import time
+        total_start = time.time()
+        total_episodes = 0
+        total_size_gb = 0
+        
+        for key in video_keys:
+            original_key = self.lerobot_modality_meta.video[key].original_key
+            if original_key is None:
+                original_key = f"observation.images.{key}" if not key.startswith("observation.images.") else key
+            
+            safe_key = original_key.replace('.', '_')
+            unified_npz_path = self.dataset_path / f"videos_unified_{safe_key}.npz"
+            
+            if not unified_npz_path.exists():
+                print(f"⚠️  Unified NPZ not found: {unified_npz_path.name}, skipping preload for {key}")
+                continue
+            
+            print(f"\n📂 Loading: {unified_npz_path.name}")
+            t0 = time.time()
+            
+            # Load NPZ file with mmap
+            npz_data = np.load(unified_npz_path, mmap_mode='r')
+            self._unified_npz_cache[safe_key] = npz_data
+            
+            # Pre-load all episodes to RAM with progress bar
+            episode_count = 0
+            for ep_key in tqdm(npz_data.files, desc=f"  Loading {key}", unit="ep"):
+                cache_key = f"{safe_key}_{ep_key}"
+                if cache_key not in self._episode_ram_cache:
+                    # Load to RAM (this triggers decompression/copy)
+                    all_images = npz_data[ep_key][:]
+                    self._episode_ram_cache[cache_key] = all_images
+                    episode_count += 1
+                    total_size_gb += all_images.nbytes / (1024**3)
+            
+            elapsed = time.time() - t0
+            print(f"✅ Loaded {episode_count} episodes in {elapsed:.1f}s ({episode_count/elapsed:.1f} eps/s)")
+            total_episodes += episode_count
+        
+        total_elapsed = time.time() - total_start
+        print("\n" + "="*70)
+        print(f"✅ PRE-LOADING COMPLETE!")
+        print(f"   Episodes: {total_episodes}")
+        print(f"   Memory: {total_size_gb:.1f} GB")
+        print(f"   Time: {total_elapsed:.1f}s")
+        print("="*70 + "\n")
 
     @property
     def dataset_path(self) -> Path:
@@ -751,8 +823,7 @@ class LeRobotSingleDataset(Dataset):
         # Get the sub-key
         key = key.replace("video.", "")
         
-        # OPTIMIZATION: Check for pre-converted NPZ files first (offline conversion)
-        # This avoids PNG decoding during training (massive speedup)
+        # FAST PATH 1: Check for unified NPZ (camera-level, single file)
         original_key = self.lerobot_modality_meta.video[key].original_key
         if original_key is None:
             if key.startswith("observation.images."):
@@ -760,30 +831,58 @@ class LeRobotSingleDataset(Dataset):
             else:
                 original_key = f"observation.images.{key}"
         
-        # Convert key to safe filename (replace dots with underscores)
         safe_key = original_key.replace('.', '_')
-        npz_path = self.dataset_path / "videos_npz" / f"episode_{trajectory_id:06d}_{safe_key}.npz"
+        unified_npz_path = self.dataset_path / f"videos_unified_{safe_key}.npz"
         
-        # DEBUG: Print once per process to verify path
-        if not hasattr(self, '_npz_debug_printed'):
-            print(f"[DATASET DEBUG] NPZ path example: {npz_path}")
-            print(f"[DATASET DEBUG] NPZ exists: {npz_path.exists()}")
-            self._npz_debug_printed = True
+        # Initialize caches if not already present (for workers)
+        if not hasattr(self, '_unified_npz_cache'):
+            self._unified_npz_cache = {}
+        if not hasattr(self, '_episode_ram_cache'):
+            self._episode_ram_cache = {}
+        if not hasattr(self, '_unified_warned'):
+            self._unified_warned = set()
         
-        if npz_path.exists():
-            # Load pre-converted NPZ file (FAST PATH)
-            # Use mmap_mode for memory efficiency with multiple workers
-            npz_data = np.load(npz_path, mmap_mode='r')
+        if safe_key not in self._unified_npz_cache:
+            if unified_npz_path.exists():
+                if safe_key not in self._unified_warned:
+                    print(f"[DATASET] ✅ Loading unified NPZ: {unified_npz_path.name}")
+                    self._unified_warned.add(safe_key)
+                import time
+                t0 = time.time()
+                self._unified_npz_cache[safe_key] = np.load(unified_npz_path, mmap_mode='r')
+                print(f"[DEBUG] np.load({unified_npz_path.name}) took {time.time()-t0:.3f}s")
+        
+        # Use unified NPZ if available
+        if safe_key in self._unified_npz_cache:
+            npz_data = self._unified_npz_cache[safe_key]
+            ep_key = str(trajectory_id)
+            if ep_key in npz_data:
+                # Check RAM cache first (to avoid repeated decompression)
+                cache_key = f"{safe_key}_{ep_key}"
+                
+                if cache_key not in self._episode_ram_cache:
+                    # First access: decompress and cache in RAM
+                    import time
+                    t0 = time.time()
+                    all_images = npz_data[ep_key][:]  # [:] copies to RAM!
+                    elapsed = time.time() - t0
+                    self._episode_ram_cache[cache_key] = all_images
+                    if elapsed > 0.1:
+                        print(f"[CACHE] Loaded ep={ep_key} to RAM ({elapsed:.3f}s, {all_images.shape})")
+                else:
+                    # Subsequent access: use RAM cache (instant!)
+                    all_images = self._episode_ram_cache[cache_key]
+                
+                return all_images[step_indices]
+        
+        # FAST PATH 2: Check for episode-level NPZ (fallback)
+        episode_npz_path = self.dataset_path / "videos_npz" / f"episode_{trajectory_id:06d}_{safe_key}.npz"
+        if episode_npz_path.exists():
+            npz_data = np.load(episode_npz_path, mmap_mode='r')
             all_images = npz_data['images']  # Shape: (T, H, W, C)
-            # Select only the required frames (critical: must use step_indices)
             return all_images[step_indices]
         
-        # DEBUG: Warn when falling back to slow path
-        if not hasattr(self, '_npz_fallback_warned'):
-            print(f"[DATASET WARNING] NPZ not found, falling back to PNG decoding for episode {trajectory_id}, key={key}, safe_key={safe_key}")
-            self._npz_fallback_warned = True
-        
-        # Fallback to original video file or parquet
+        # SLOW PATH: Fallback to video file or parquet
         video_path = self.get_video_path(trajectory_id, key)
         
         # Check if video file exists
@@ -1016,12 +1115,36 @@ class CachedLeRobotSingleDataset(LeRobotSingleDataset):
                 desc=f"Caching {key} frames",
             ):
                 video_path = self.get_video_path(trajectory_id, key)
-                frames = get_all_frames(
-                    video_path.as_posix(),
-                    video_backend=self.video_backend,
-                    video_backend_kwargs=self.video_backend_kwargs,
-                    resize_size=img_resize,
-                )
+                
+                # Check if video file exists, otherwise load from parquet
+                if video_path.exists():
+                    frames = get_all_frames(
+                        video_path.as_posix(),
+                        video_backend=self.video_backend,
+                        video_backend_kwargs=self.video_backend_kwargs,
+                        resize_size=img_resize,
+                    )
+                else:
+                    # LIBERO case: load from parquet and decode PNG
+                    frames_list = []
+                    for frame_idx in range(trajectory_length):
+                        # Use parent class get_video method which handles parquet
+                        # key needs "video." prefix for get_video
+                        frame = super(CachedLeRobotSingleDataset, self).get_video(
+                            trajectory_id, f"video.{key}", frame_idx
+                        )
+                        # frame is shape (T, H, W, C), take all frames
+                        frames_list.append(frame[0])
+                    frames = np.stack(frames_list, axis=0)
+                    
+                    # Resize if needed
+                    if img_resize is not None:
+                        import cv2
+                        resized = []
+                        for f in frames:
+                            resized.append(cv2.resize(f, img_resize))
+                        frames = np.stack(resized, axis=0)
+                
                 assert frames.ndim == 4, f"Expected 4D array, got {frames.shape} array"
                 assert frames.shape[3] == 3, f"Expected 3 channels, got {frames.shape[3]} channels"
                 # assert (

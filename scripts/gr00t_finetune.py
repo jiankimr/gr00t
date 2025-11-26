@@ -16,20 +16,25 @@
 import os
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal
+from typing import List, Literal, Any
 
 import torch
 import tyro
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from transformers import TrainingArguments
+from transformers.optimization import get_cosine_schedule_with_warmup
+from transformers.trainer import ALL_LAYERNORM_LAYERS, get_parameter_names
 
 from gr00t.data.dataset import LeRobotMixtureDataset, LeRobotSingleDataset
 from gr00t.data.schema import EmbodimentTag
 from gr00t.experiment.data_config import DATA_CONFIG_MAP
 from gr00t.experiment.runner import TrainRunner
 from gr00t.model.gr00t_n1 import GR00T_N1_5
-from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING
+from gr00t.model.transforms import EMBODIMENT_TAG_MAPPING, DefaultDataCollator
 from gr00t.utils.peft import get_lora_model
 
 
@@ -121,6 +126,200 @@ class ArgsConfig:
     # Mixture dataset parameters
     balance_trajectory_weights: bool = True
     """Used in LeRobotMixtureDataset. If True, sample trajectories within a dataset weighted by their length; otherwise, equal weighting."""
+
+    # Training loop type
+    use_trainer: bool = True
+    """If False, run a custom manual training loop instead of HuggingFace Trainer."""
+
+
+def _move_to_device(batch: Any, device: torch.device) -> Any:
+    """Recursively move tensors in a nested structure to the given device."""
+    if isinstance(batch, torch.Tensor):
+        return batch.to(device, non_blocking=True)
+    if isinstance(batch, dict):
+        return {k: _move_to_device(v, device) for k, v in batch.items()}
+    if isinstance(batch, (list, tuple)):
+        out = [_move_to_device(v, device) for v in batch]
+        return type(batch)(out)
+    return batch
+
+
+def manual_train_loop(config: ArgsConfig, train_dataset: torch.utils.data.Dataset, model: torch.nn.Module) -> None:
+    """Lightweight single-GPU training loop that bypasses HuggingFace Trainer."""
+    assert (
+        config.num_gpus == 1
+    ), "manual_train_loop currently supports only single-GPU training. Use num_gpus=1."
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type != "cuda":
+        raise RuntimeError("CUDA device is required for GR00T fine-tuning.")
+
+    model.to(device)
+    model.train()
+
+    # DataLoader closely mirrors the Trainer settings
+    # NOTE: For diagnosis, we disable shuffle so that sampling pattern is deterministic
+    # and heavy data-loading paths (e.g., new trajectories) are easier to reason about.
+    dataloader = DataLoader(
+        train_dataset,
+        batch_size=config.batch_size,
+        shuffle=False,
+        num_workers=config.dataloader_num_workers,
+        collate_fn=DefaultDataCollator(),
+        pin_memory=True,
+        persistent_workers=config.dataloader_num_workers > 0,
+        drop_last=True,
+    )
+
+    # Optimizer with decoupled weight decay (same structure as DualBrainTrainer)
+    decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
+    decay_parameters = [name for name in decay_parameters if "bias" not in name]
+    optimizer_grouped_parameters = [
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (n in decay_parameters and p.requires_grad)
+            ],
+            "weight_decay": config.weight_decay,
+        },
+        {
+            "params": [
+                p
+                for n, p in model.named_parameters()
+                if (n not in decay_parameters and p.requires_grad)
+            ],
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = torch.optim.AdamW(
+        optimizer_grouped_parameters,
+        lr=config.learning_rate,
+        betas=(0.95, 0.999),
+        eps=1e-8,
+    )
+
+    total_steps = config.max_steps
+    warmup_steps = int(total_steps * config.warmup_ratio)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps,
+    )
+
+    os.makedirs(config.output_dir, exist_ok=True)
+    writer: SummaryWriter | None = None
+    if config.report_to == "tensorboard":
+        writer = SummaryWriter(log_dir=config.output_dir)
+
+    global_step = 0
+    epoch = 0
+
+    print("\n" + "=" * 70)
+    print("🚀 STARTING MANUAL GR00T TRAINING LOOP (no HF Trainer)")
+    print("=" * 70)
+    print(
+        f"batch_size={config.batch_size}, "
+        f"num_workers={config.dataloader_num_workers}, "
+        f"max_steps={config.max_steps}, "
+        f"save_steps={config.save_steps}"
+    )
+    print("=" * 70 + "\n")
+
+    # Use an explicit iterator so we can time data loading separately
+    dataloader_iter = iter(dataloader)
+
+    while global_step < total_steps:
+        epoch += 1
+        while global_step < total_steps:
+            step_wall_start = time.time()
+            # ---- Data loading ----
+            t0 = time.time()
+            try:
+                batch = next(dataloader_iter)
+            except StopIteration:
+                # New epoch
+                epoch += 1
+                dataloader_iter = iter(dataloader)
+                batch = next(dataloader_iter)
+            t_data = time.time() - t0
+
+            # ---- CPU -> GPU transfer ----
+            t0 = time.time()
+            batch = _move_to_device(batch, device)
+            torch.cuda.synchronize()
+            t_transfer = time.time() - t0
+
+            # ---- Forward ----
+            t0 = time.time()
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                outputs = model(batch)
+                loss = outputs["loss"]
+            torch.cuda.synchronize()
+            t_forward = time.time() - t0
+
+            # ---- Backward ----
+            t0 = time.time()
+            loss.backward()
+            torch.cuda.synchronize()
+            t_backward = time.time() - t0
+
+            # ---- Optimizer + Scheduler ----
+            t0 = time.time()
+            optimizer.step()
+            scheduler.step()
+            torch.cuda.synchronize()
+            t_optim = time.time() - t0
+
+            global_step += 1
+            step_wall = time.time() - step_wall_start
+
+            if writer is not None:
+                writer.add_scalar("train/loss", loss.item(), global_step)
+                writer.add_scalar("train/step_time_s", step_wall, global_step)
+                writer.add_scalar("train/time_data_s", t_data, global_step)
+                writer.add_scalar("train/time_transfer_s", t_transfer, global_step)
+                writer.add_scalar("train/time_forward_s", t_forward, global_step)
+                writer.add_scalar("train/time_backward_s", t_backward, global_step)
+                writer.add_scalar("train/time_optim_s", t_optim, global_step)
+
+            if global_step == 1 or global_step <= 10 or global_step % 10 == 0:
+                print(
+                    f"[MANUAL] step={global_step} "
+                    f"loss={loss.item():.4f} "
+                    f"total={step_wall:.3f}s "
+                    f"data={t_data:.3f}s "
+                    f"transfer={t_transfer:.3f}s "
+                    f"forward={t_forward:.3f}s "
+                    f"backward={t_backward:.3f}s "
+                    f"optim={t_optim:.3f}s",
+                    flush=True,
+                )
+
+            if config.save_steps > 0 and global_step % config.save_steps == 0:
+                ckpt_dir = os.path.join(config.output_dir, f"checkpoint-step-{global_step}")
+                os.makedirs(ckpt_dir, exist_ok=True)
+                # Save only the tuned GR00T weights (same as Trainer.save_model)
+                model.save_pretrained(ckpt_dir)
+                torch.save(
+                    {
+                        "optimizer": optimizer.state_dict(),
+                        "scheduler": scheduler.state_dict(),
+                    },
+                    os.path.join(ckpt_dir, "optimizer_sched.pt"),
+                )
+                print(f"[MANUAL] Saved checkpoint to {ckpt_dir}", flush=True)
+
+            if global_step >= total_steps:
+                break
+
+    if writer is not None:
+        writer.close()
+
+    print("\n" + "=" * 70)
+    print(f"✅ MANUAL TRAINING COMPLETE. total_steps={global_step}")
+    print("=" * 70 + "\n")
 
 
 #####################################################################################
@@ -239,6 +438,7 @@ def main(config: ArgsConfig):
         )
 
     # 2.1 modify training args
+    if config.use_trainer:
     training_args = TrainingArguments(
         output_dir=config.output_dir,
         run_name=None,
@@ -250,7 +450,7 @@ def main(config: ArgsConfig):
         per_device_train_batch_size=config.batch_size,
         gradient_accumulation_steps=1,
         dataloader_num_workers=config.dataloader_num_workers,
-        dataloader_pin_memory=False,
+            dataloader_pin_memory=True,  # 빠른 CPU→GPU 전송
         dataloader_persistent_workers=config.dataloader_num_workers > 0,
         optim="adamw_torch",
         adam_beta1=0.95,
@@ -275,7 +475,7 @@ def main(config: ArgsConfig):
         torch_compile_mode=None,
     )
 
-    # 2.2 run experiment
+        # 2.2 run experiment (HF Trainer path)
     experiment = TrainRunner(
         train_dataset=train_dataset,
         model=model,
@@ -285,6 +485,9 @@ def main(config: ArgsConfig):
 
     # 2.3 run experiment
     experiment.train()
+    else:
+        # Pure PyTorch loop without HuggingFace Trainer
+        manual_train_loop(config, train_dataset, model)
 
 
 if __name__ == "__main__":

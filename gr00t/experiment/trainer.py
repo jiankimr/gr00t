@@ -15,6 +15,7 @@
 
 
 import os
+import time
 from typing import Optional
 
 import torch
@@ -63,7 +64,17 @@ class BaseSampler(Sampler):
 class DualBrainTrainer(transformers.Trainer):
     def __init__(self, **kwargs):
         self.compute_dtype = kwargs.pop("compute_dtype")
+        # For lightweight per-step profiling (set on-the-fly during training)
+        self._last_prepare_inputs_time = 0.0
+        self._last_forward_time = 0.0
         super().__init__(**kwargs)
+
+    def _prepare_inputs(self, inputs):
+        """Override to measure HuggingFace's input preparation (incl. CPU→GPU moves)."""
+        t0 = time.time()
+        out = super()._prepare_inputs(inputs)
+        self._last_prepare_inputs_time = time.time() - t0
+        return out
 
     def _get_train_sampler(self):
         return BaseSampler(self.train_dataset, shuffle=True, seed=self.args.seed)
@@ -72,8 +83,25 @@ class DualBrainTrainer(transformers.Trainer):
         return BaseSampler(eval_dataset, shuffle=False)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        # Measure pure model forward time (loss computation)
+        t0 = time.time()
         outputs = model(inputs)
+        self._last_forward_time = time.time() - t0
         loss = outputs["loss"]
+
+        # Lightweight per-step log on main rank only
+        try:
+            step = getattr(self.state, "global_step", None)
+        except Exception:
+            step = None
+        if step is not None and (self.args.local_rank in (-1, 0)):
+            print(
+                f"[PROFILE] step={step} "
+                f"prepare_inputs={self._last_prepare_inputs_time:.3f}s "
+                f"forward={self._last_forward_time:.3f}s",
+                flush=True,
+            )
+
         return (loss, outputs) if return_outputs else loss
 
     def create_optimizer(self):

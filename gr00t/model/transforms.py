@@ -17,6 +17,9 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
+import os
+import time
+
 import numpy as np
 import torch
 import tree
@@ -52,6 +55,9 @@ def build_eagle_processor(eagle_path: str) -> ProcessorMixin:
     return eagle_processor
 
 
+PROFILE_EAGLE = os.environ.get("PROFILE_EAGLE", "0") == "1"
+
+
 def collate(features: List[dict], eagle_processor) -> dict:
     batch = {}
     keys = features[0].keys()
@@ -67,9 +73,18 @@ def collate(features: List[dict], eagle_processor) -> dict:
                 curr_image_inputs = v["image_inputs"]
                 text_list += curr_text_list
                 image_inputs += curr_image_inputs
+            prep_end = time.time()
             eagle_inputs = eagle_processor(
                 text=text_list, images=image_inputs, return_tensors="pt", padding=True
             )
+            if PROFILE_EAGLE:
+                total_time = time.time() - prep_end
+                print(
+                    f"[PROFILE] eagle_processor batch_size={len(features)} "
+                    f"texts={len(text_list)} images={len(image_inputs)} "
+                    f"time={total_time:.3f}s",
+                    flush=True,
+                )
             for k, v in eagle_inputs.items():
                 k = "eagle_" + k
                 batch[k] = v
