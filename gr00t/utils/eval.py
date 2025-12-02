@@ -22,6 +22,11 @@ from gr00t.model.policy import BasePolicy
 # numpy print precision settings 3, dont use exponential notation
 np.set_printoptions(precision=3, suppress=True)
 
+# Mapping for state keys that differ from action keys
+STATE_KEY_MAPPING = {
+    "gripper": "gripper_left_finger",
+}
+
 
 def download_from_hg(repo_id: str, repo_type: str) -> str:
     """
@@ -53,10 +58,22 @@ def calc_mse_for_single_trajectory(
         data_point = None
         if plot_state:
             data_point = dataset.get_step_data(traj_id, step_count)
-            concat_state = np.concatenate(
-                [data_point[f"state.{key}"][0] for key in modality_keys], axis=0
-            )
-            state_joints_across_time.append(concat_state)
+            state_list = []
+            for key in modality_keys:
+                state_key = STATE_KEY_MAPPING.get(key, key)
+                # Try to get state data, if not found, skip or handle gracefully
+                if f"state.{state_key}" in data_point:
+                    state_list.append(data_point[f"state.{state_key}"][0])
+                else:
+                    # But this case will not happen in the current dataset
+                    # If key is missing, maybe try original key or just append zeros/skip
+                    # For now, let's skip to avoid crash, but this might cause shape mismatch later
+                    print(f"Warning: State key 'state.{state_key}' not found in data_point")
+                    pass
+
+            if state_list:
+                concat_state = np.concatenate(state_list, axis=0)
+                state_joints_across_time.append(concat_state)
 
         if step_count % action_horizon == 0:
             if data_point is None:

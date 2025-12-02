@@ -773,6 +773,7 @@ class LiberoDataConfig:
     # Use only the front camera; wrist camera videos are missing for many episodes
     video_keys = [
         "video.image",
+        "video.wrist_image",
     ]
     state_keys = [
         "state.x",
@@ -895,8 +896,19 @@ class LiberoNoisyDataConfig(LiberoDataConfig):
             amplitude=0.3,
         )
 
-        # Insert noise BEFORE the final GR00TTransform so that GR00TTransform stays last
-        transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+        # Insert noise BEFORE ConcatTransform
+        concat_idx = -1
+        for i, t in enumerate(base_transforms):
+            if isinstance(t, ConcatTransform):
+                concat_idx = i
+                break
+        
+        if concat_idx != -1:
+            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+        else:
+            # Fallback: append before the last transform if ConcatTransform not found (should not happen)
+            transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+            
         return ComposedModalityTransform(transforms=transforms)
 
 
