@@ -33,7 +33,7 @@ from gr00t.data.transform.video import (
     VideoToTensor,
 )
 from gr00t.model.transforms import GR00TTransform
-from gr00t.data.transform.noise import ActionNoiseTransform
+from gr00t.data.transform.noise import ActionNoiseTransform, StochasticActionNoiseTransform
 
 @dataclass
 class BaseDataConfig(ABC):
@@ -911,6 +911,63 @@ class LiberoNoisyDataConfig(LiberoDataConfig):
             
         return ComposedModalityTransform(transforms=transforms)
 
+class LiberoNoisy02DataConfig(LiberoDataConfig):
+    def transform(self):
+        # Start from the base LIBERO transforms
+        base_transforms = super().transform().transforms
+
+        # Noise on the x-coordinate of the action with reduced amplitude (0.2)
+        noise_transform = ActionNoiseTransform(
+            apply_to=["action.x"],
+            target_dim=0,
+            pattern=[1.0, 1.0, -1.0, -1.0],
+            amplitude=0.2,
+        )
+
+        # Insert noise BEFORE ConcatTransform
+        concat_idx = -1
+        for i, t in enumerate(base_transforms):
+            if isinstance(t, ConcatTransform):
+                concat_idx = i
+                break
+        
+        if concat_idx != -1:
+            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+        else:
+            # Fallback: append before the last transform if ConcatTransform not found (should not happen)
+            transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+            
+        return ComposedModalityTransform(transforms=transforms)
+
+
+class LiberoNoisyMixedDataConfig(LiberoDataConfig):
+    """50% of samples get noise (amplitude 0.3), 50% remain clean."""
+    def transform(self):
+        # Start from the base LIBERO transforms
+        base_transforms = super().transform().transforms
+
+        # Stochastic noise: 50% probability of applying noise
+        noise_transform = StochasticActionNoiseTransform(
+            apply_to=["action.x"],
+            target_dim=0,
+            pattern=[1.0, 1.0, -1.0, -1.0],
+            amplitude=0.3,
+            noise_probability=0.5,
+        )
+
+        # Insert noise BEFORE ConcatTransform
+        concat_idx = -1
+        for i, t in enumerate(base_transforms):
+            if isinstance(t, ConcatTransform):
+                concat_idx = i
+                break
+        
+        if concat_idx != -1:
+            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+        else:
+            transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+            
+        return ComposedModalityTransform(transforms=transforms)
 
 
 ###########################################################################################
@@ -930,4 +987,6 @@ DATA_CONFIG_MAP = {
     "agibot_genie1": AgibotGenie1DataConfig(),
     "libero": LiberoDataConfig(),
     "libero_noisy": LiberoNoisyDataConfig(),
+    "libero_noisy_02": LiberoNoisy02DataConfig(),
+    "libero_noisy_mixed": LiberoNoisyMixedDataConfig(),
 }
