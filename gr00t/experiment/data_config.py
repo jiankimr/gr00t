@@ -970,6 +970,134 @@ class LiberoNoisyMixedDataConfig(LiberoDataConfig):
         return ComposedModalityTransform(transforms=transforms)
 
 
+class LiberoNoisyMixed25DataConfig(LiberoDataConfig):
+    """25% of samples get noise (amplitude 0.3), 75% remain clean."""
+    def transform(self):
+        # Start from the base LIBERO transforms
+        base_transforms = super().transform().transforms
+
+        # Stochastic noise: 25% probability of applying noise
+        noise_transform = StochasticActionNoiseTransform(
+            apply_to=["action.x"],
+            target_dim=0,
+            pattern=[1.0, 1.0, -1.0, -1.0],
+            amplitude=0.3,
+            noise_probability=0.25,
+        )
+
+        # Insert noise BEFORE ConcatTransform
+        concat_idx = -1
+        for i, t in enumerate(base_transforms):
+            if isinstance(t, ConcatTransform):
+                concat_idx = i
+                break
+        
+        if concat_idx != -1:
+            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+        else:
+            transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+            
+        return ComposedModalityTransform(transforms=transforms)
+
+
+class LiberoNoisyMixed12_5DataConfig(LiberoDataConfig):
+    """12.5% of samples get noise (amplitude 0.3), 87.5% remain clean."""
+    def transform(self):
+        # Start from the base LIBERO transforms
+        base_transforms = super().transform().transforms
+
+        # Stochastic noise: 12.5% probability of applying noise
+        noise_transform = StochasticActionNoiseTransform(
+            apply_to=["action.x"],
+            target_dim=0,
+            pattern=[1.0, 1.0, -1.0, -1.0],
+            amplitude=0.3,
+            noise_probability=0.125,
+        )
+
+        # Insert noise BEFORE ConcatTransform
+        concat_idx = -1
+        for i, t in enumerate(base_transforms):
+            if isinstance(t, ConcatTransform):
+                concat_idx = i
+                break
+        
+        if concat_idx != -1:
+            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+        else:
+            transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
+            
+        return ComposedModalityTransform(transforms=transforms)
+
+
+###########################################################################################
+
+
+class FrankaRealRobotDataConfig(BaseDataConfig):
+    """Data config for real Franka robot with 3 cameras"""
+    video_keys = [
+        "video.exterior_image_1_left",
+        "video.exterior_image_2_left",
+        "video.wrist_image_left",
+    ]
+    state_keys = [
+        "state.eef_pos",
+        "state.eef_rot",
+        "state.gripper",
+        "state.joint_pos",
+    ]
+    action_keys = [
+        "action.delta_pos",
+        "action.delta_rot",
+        "action.gripper",
+    ]
+    language_keys = ["annotation.human.action.task_description"]
+    observation_indices = [0]
+    action_indices = list(range(16))
+
+    def transform(self) -> ModalityTransform:
+        transforms = [
+            # video transforms
+            VideoToTensor(apply_to=self.video_keys),
+            VideoCrop(apply_to=self.video_keys, scale=0.95),
+            VideoResize(apply_to=self.video_keys, height=224, width=224, interpolation="linear"),
+            VideoColorJitter(
+                apply_to=self.video_keys,
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.5,
+                hue=0.08,
+            ),
+            VideoToNumpy(apply_to=self.video_keys),
+            # state transforms
+            StateActionToTensor(apply_to=self.state_keys),
+            StateActionTransform(
+                apply_to=self.state_keys,
+                normalization_modes={key: "min_max" for key in self.state_keys},
+            ),
+            # action transforms
+            StateActionToTensor(apply_to=self.action_keys),
+            StateActionTransform(
+                apply_to=self.action_keys,
+                normalization_modes={key: "min_max" for key in self.action_keys},
+            ),
+            # concat transforms
+            ConcatTransform(
+                video_concat_order=self.video_keys,
+                state_concat_order=self.state_keys,
+                action_concat_order=self.action_keys,
+            ),
+            # model-specific transform
+            GR00TTransform(
+                state_horizon=len(self.observation_indices),
+                action_horizon=len(self.action_indices),
+                max_state_dim=64,
+                max_action_dim=32,
+            ),
+        ]
+        return ComposedModalityTransform(transforms=transforms)
+
+
 ###########################################################################################
 
 DATA_CONFIG_MAP = {
@@ -989,4 +1117,7 @@ DATA_CONFIG_MAP = {
     "libero_noisy": LiberoNoisyDataConfig(),
     "libero_noisy_02": LiberoNoisy02DataConfig(),
     "libero_noisy_mixed": LiberoNoisyMixedDataConfig(),
+    "libero_noisy_mixed_25": LiberoNoisyMixed25DataConfig(),
+    "libero_noisy_mixed_12_5": LiberoNoisyMixed12_5DataConfig(),
+    "franka_real": FrankaRealRobotDataConfig(),
 }
