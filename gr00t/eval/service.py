@@ -118,9 +118,12 @@ class BaseInferenceServer:
                 request = MsgSerializer.from_bytes(message)
                 # Debug: log received data keys and message size
                 if "data" in request:
-                    keys = list(request['data'].keys())
-                    has_wrist = 'video.wrist_image' in keys
-                    print(f"[DEBUG] msg_size={msg_size}, has_wrist={has_wrist}, keys={keys}", flush=True)
+                    keys = list(request["data"].keys())
+                    has_wrist = "video.wrist_image" in keys
+                    print(
+                        f"[DEBUG] msg_size={msg_size}, has_wrist={has_wrist}, keys={keys}",
+                        flush=True,
+                    )
 
                 # Validate token before processing request
                 if not self._validate_token(request):

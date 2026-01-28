@@ -17,7 +17,6 @@
 Functions that work on nested structures of torch.Tensor or numpy array
 """
 
-
 from collections.abc import Sequence
 
 import numpy as np

@@ -17,9 +17,9 @@ from typing import Any
 
 import numpy as np
 import torch
+from pydantic import Field
 
 from gr00t.data.transform.base import ModalityTransform
-from pydantic import Field
 
 
 class ActionNoiseTransform(ModalityTransform):
@@ -32,9 +32,7 @@ class ActionNoiseTransform(ModalityTransform):
         default_factory=lambda: [1.0, 1.0, -1.0, -1.0],
         description="The noise pattern to repeat (e.g., [1.0, 1.0, -1.0, -1.0] for ++-- pattern).",
     )
-    amplitude: float = Field(
-        default=0.25, description="The amplitude of the noise to add."
-    )
+    amplitude: float = Field(default=0.25, description="The amplitude of the noise to add.")
     clip_range: tuple[float, float] = Field(
         default=(-1.0, 1.0), description="The range to clip the noisy values to."
     )
@@ -97,9 +95,7 @@ class StochasticActionNoiseTransform(ModalityTransform):
         default_factory=lambda: [1.0, 1.0, -1.0, -1.0],
         description="The noise pattern to repeat (e.g., [1.0, 1.0, -1.0, -1.0] for ++-- pattern).",
     )
-    amplitude: float = Field(
-        default=0.25, description="The amplitude of the noise to add."
-    )
+    amplitude: float = Field(default=0.25, description="The amplitude of the noise to add.")
     clip_range: tuple[float, float] = Field(
         default=(-1.0, 1.0), description="The range to clip the noisy values to."
     )
@@ -156,4 +152,3 @@ class StochasticActionNoiseTransform(ModalityTransform):
                 data[key] = action_data
 
         return data
-
