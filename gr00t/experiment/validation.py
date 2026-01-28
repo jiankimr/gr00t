@@ -22,19 +22,24 @@ To disable: Simply don't use these functions or set enable_validation=False
 """
 
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 import torch
 from torch.utils.data import Dataset, Subset
-from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+from transformers import (
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
+    TrainingArguments,
+)
 
 
 @dataclass
 class ValidationConfig:
     """Configuration for validation."""
+
     enable_validation: bool = False
     val_split_ratio: float = 0.05  # 5% for validation (e.g., 50 episodes -> 2-3 for val)
     eval_steps: int = 100  # Evaluate every N steps
@@ -49,52 +54,52 @@ def create_train_val_split(
 ) -> Tuple[Subset, Subset]:
     """
     Split dataset into train and validation sets.
-    
+
     This uses a deterministic split based on seed, so the same split
     is always produced for the same dataset and seed.
-    
+
     Args:
         dataset: The full dataset to split
         val_ratio: Ratio of data to use for validation (default: 0.1 = 10%)
         seed: Random seed for reproducible split
-        
+
     Returns:
         Tuple of (train_subset, val_subset)
     """
     total_size = len(dataset)
     val_size = int(total_size * val_ratio)
     train_size = total_size - val_size
-    
+
     # Create deterministic indices
     generator = torch.Generator().manual_seed(seed)
     indices = torch.randperm(total_size, generator=generator).tolist()
-    
+
     train_indices = indices[:train_size]
     val_indices = indices[train_size:]
-    
+
     # Sort indices to maintain some ordering (optional, helps with caching)
     train_indices = sorted(train_indices)
     val_indices = sorted(val_indices)
-    
+
     train_subset = Subset(dataset, train_indices)
     val_subset = Subset(dataset, val_indices)
-    
+
     print(f"[Validation] Dataset split: {train_size} train, {val_size} val ({val_ratio*100:.1f}%)")
-    
+
     return train_subset, val_subset
 
 
 class ValidationCallback(TrainerCallback):
     """
     Callback for logging validation metrics.
-    
+
     This callback is optional and doesn't affect training when not used.
     """
-    
+
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
         self.val_history = []
-        
+
     def on_evaluate(
         self,
         args: TrainingArguments,
@@ -109,23 +114,23 @@ class ValidationCallback(TrainerCallback):
             "step": state.global_step,
             "epoch": state.epoch,
         }
-        
+
         # Extract eval metrics
         for key, value in metrics.items():
             if key.startswith("eval_"):
                 val_metrics[key] = value
-                
+
         self.val_history.append(val_metrics)
-        
+
         # Save validation history
         history_path = self.output_dir / "validation_history.json"
         with open(history_path, "w") as f:
             json.dump(self.val_history, f, indent=2)
-            
+
         # Print summary
         if "eval_loss" in metrics:
             print(f"\n[Validation] Step {state.global_step}: val_loss = {metrics['eval_loss']:.4f}")
-            
+
     def on_train_end(
         self,
         args: TrainingArguments,
@@ -135,7 +140,9 @@ class ValidationCallback(TrainerCallback):
     ):
         """Called at the end of training."""
         if self.val_history:
-            print(f"\n[Validation] Training complete. {len(self.val_history)} evaluations performed.")
+            print(
+                f"\n[Validation] Training complete. {len(self.val_history)} evaluations performed."
+            )
             print(f"[Validation] History saved to: {self.output_dir / 'validation_history.json'}")
 
 
@@ -145,20 +152,20 @@ def setup_validation_args(
 ) -> TrainingArguments:
     """
     Modify TrainingArguments to enable validation.
-    
+
     This only modifies eval-related settings and doesn't affect
     training hyperparameters like learning rate, batch size, etc.
-    
+
     Args:
         training_args: Original TrainingArguments
         val_config: Validation configuration
-        
+
     Returns:
         Modified TrainingArguments with validation enabled
     """
     if not val_config.enable_validation:
         return training_args
-    
+
     # Enable evaluation
     training_args.do_eval = True
     # Use eval_strategy (newer) and evaluation_strategy (older) for compatibility
@@ -166,19 +173,19 @@ def setup_validation_args(
     training_args.evaluation_strategy = "steps"  # For older versions
     training_args.eval_steps = val_config.eval_steps
     training_args.eval_on_start = val_config.eval_on_start
-    
+
     # Use same batch size for eval (can be adjusted if memory is an issue)
     training_args.per_device_eval_batch_size = training_args.per_device_train_batch_size
-    
+
     print(f"[Validation] Enabled: eval every {val_config.eval_steps} steps")
-    
+
     return training_args
 
 
 def add_validation_to_trainer(trainer, val_dataset: Dataset, output_dir: str):
     """
     Add validation dataset and callback to an existing trainer.
-    
+
     Args:
         trainer: The HuggingFace Trainer instance
         val_dataset: Validation dataset
@@ -194,14 +201,13 @@ def validate_setup(trainer, val_config: ValidationConfig) -> bool:
     """Check if validation is properly configured."""
     if not val_config.enable_validation:
         return True
-        
+
     if trainer.eval_dataset is None:
         print("[Validation] Warning: Validation enabled but no eval_dataset set!")
         return False
-        
+
     if not trainer.args.do_eval:
         print("[Validation] Warning: Validation enabled but do_eval is False!")
         return False
-        
-    return True
 
+    return True

@@ -20,6 +20,10 @@ from typing import Optional
 from gr00t.data.dataset import ModalityConfig
 from gr00t.data.transform.base import ComposedModalityTransform, ModalityTransform
 from gr00t.data.transform.concat import ConcatTransform
+from gr00t.data.transform.noise import (
+    ActionNoiseTransform,
+    StochasticActionNoiseTransform,
+)
 from gr00t.data.transform.state_action import (
     StateActionSinCosTransform,
     StateActionToTensor,
@@ -33,7 +37,7 @@ from gr00t.data.transform.video import (
     VideoToTensor,
 )
 from gr00t.model.transforms import GR00TTransform
-from gr00t.data.transform.noise import ActionNoiseTransform, StochasticActionNoiseTransform
+
 
 @dataclass
 class BaseDataConfig(ABC):
@@ -769,6 +773,7 @@ class AgibotGenie1DataConfig(BaseDataConfig):
 
         return ComposedModalityTransform(transforms=transforms)
 
+
 class LiberoDataConfig:
     # Use only the front camera; wrist camera videos are missing for many episodes
     video_keys = [
@@ -883,6 +888,7 @@ class LiberoDataConfig:
 
         return ComposedModalityTransform(transforms=transforms)
 
+
 class LiberoNoisyDataConfig(LiberoDataConfig):
     def transform(self):
         # Start from the base LIBERO transforms
@@ -902,14 +908,17 @@ class LiberoNoisyDataConfig(LiberoDataConfig):
             if isinstance(t, ConcatTransform):
                 concat_idx = i
                 break
-        
+
         if concat_idx != -1:
-            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            transforms = (
+                base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            )
         else:
             # Fallback: append before the last transform if ConcatTransform not found (should not happen)
             transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
-            
+
         return ComposedModalityTransform(transforms=transforms)
+
 
 class LiberoNoisy02DataConfig(LiberoDataConfig):
     def transform(self):
@@ -930,18 +939,21 @@ class LiberoNoisy02DataConfig(LiberoDataConfig):
             if isinstance(t, ConcatTransform):
                 concat_idx = i
                 break
-        
+
         if concat_idx != -1:
-            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            transforms = (
+                base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            )
         else:
             # Fallback: append before the last transform if ConcatTransform not found (should not happen)
             transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
-            
+
         return ComposedModalityTransform(transforms=transforms)
 
 
 class LiberoNoisyMixedDataConfig(LiberoDataConfig):
     """50% of samples get noise (amplitude 0.3), 50% remain clean."""
+
     def transform(self):
         # Start from the base LIBERO transforms
         base_transforms = super().transform().transforms
@@ -961,17 +973,20 @@ class LiberoNoisyMixedDataConfig(LiberoDataConfig):
             if isinstance(t, ConcatTransform):
                 concat_idx = i
                 break
-        
+
         if concat_idx != -1:
-            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            transforms = (
+                base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            )
         else:
             transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
-            
+
         return ComposedModalityTransform(transforms=transforms)
 
 
 class LiberoNoisyMixed25DataConfig(LiberoDataConfig):
     """25% of samples get noise (amplitude 0.3), 75% remain clean."""
+
     def transform(self):
         # Start from the base LIBERO transforms
         base_transforms = super().transform().transforms
@@ -991,17 +1006,20 @@ class LiberoNoisyMixed25DataConfig(LiberoDataConfig):
             if isinstance(t, ConcatTransform):
                 concat_idx = i
                 break
-        
+
         if concat_idx != -1:
-            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            transforms = (
+                base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            )
         else:
             transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
-            
+
         return ComposedModalityTransform(transforms=transforms)
 
 
 class LiberoNoisyMixed12_5DataConfig(LiberoDataConfig):
     """12.5% of samples get noise (amplitude 0.3), 87.5% remain clean."""
+
     def transform(self):
         # Start from the base LIBERO transforms
         base_transforms = super().transform().transforms
@@ -1021,12 +1039,14 @@ class LiberoNoisyMixed12_5DataConfig(LiberoDataConfig):
             if isinstance(t, ConcatTransform):
                 concat_idx = i
                 break
-        
+
         if concat_idx != -1:
-            transforms = base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            transforms = (
+                base_transforms[:concat_idx] + [noise_transform] + base_transforms[concat_idx:]
+            )
         else:
             transforms = base_transforms[:-1] + [noise_transform] + [base_transforms[-1]]
-            
+
         return ComposedModalityTransform(transforms=transforms)
 
 
@@ -1035,18 +1055,19 @@ class LiberoNoisyMixed12_5DataConfig(LiberoDataConfig):
 
 class FrankaRealRobotDataConfig(BaseDataConfig):
     """Data config for real Franka robot with 3 cameras
-    
+
     State structure (14D total, based on extract_full_state()):
         - eef_pos (0:3): 3D end-effector position [x, y, z]
         - eef_rot (3:6): 3D euler angles [roll, pitch, yaw]
         - joint_pos (6:13): 7D joint positions (Franka has 7 DOF)
         - gripper (13:14): 1D gripper state
-    
+
     Action structure (7D):
         - delta_pos (0:3): 3D position delta
         - delta_rot (3:6): 3D euler angle delta
         - gripper (6:7): 1D gripper command
     """
+
     video_keys = [
         "video.exterior_image_1_left",
         "video.exterior_image_2_left",
@@ -1054,15 +1075,15 @@ class FrankaRealRobotDataConfig(BaseDataConfig):
     ]
     # Order must match modality.json indices!
     state_keys = [
-        "state.eef_pos",     # 0:3  (3D)
-        "state.eef_rot",     # 3:6  (3D euler angles)
-        "state.joint_pos",   # 6:13 (7D - Franka 7 joints)
-        "state.gripper",     # 13:14 (1D)
+        "state.eef_pos",  # 0:3  (3D)
+        "state.eef_rot",  # 3:6  (3D euler angles)
+        "state.joint_pos",  # 6:13 (7D - Franka 7 joints)
+        "state.gripper",  # 13:14 (1D)
     ]
     action_keys = [
         "action.delta_pos",  # 0:3 (3D)
         "action.delta_rot",  # 3:6 (3D euler delta)
-        "action.gripper",    # 6:7 (1D)
+        "action.gripper",  # 6:7 (1D)
     ]
     language_keys = ["annotation.human.action.task_description"]
     observation_indices = [0]

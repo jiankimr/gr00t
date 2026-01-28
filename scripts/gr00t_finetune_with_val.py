@@ -30,7 +30,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Literal
 
@@ -149,7 +149,7 @@ class ArgsConfig:
     # ============ VALIDATION PARAMETERS ============
     # These parameters control validation behavior.
     # When enable_validation=False, training is identical to original.
-    
+
     enable_validation: bool = False
     """Enable validation loss tracking. Default: False (same as original)."""
 
@@ -220,12 +220,12 @@ class DualBrainTrainerWithEval:
     Custom trainer that properly handles GR00T model evaluation.
     GR00T model has a different forward signature than standard HuggingFace models.
     """
-    
+
     @staticmethod
     def create(base_trainer_class):
         """Create a custom trainer class that supports GR00T evaluation."""
-        from typing import Optional, Union, Tuple, Dict, List, Any
-        
+        from typing import List, Optional, Tuple
+
         class CustomTrainer(base_trainer_class):
             def prediction_step(
                 self,
@@ -239,16 +239,16 @@ class DualBrainTrainerWithEval:
                 GR00T uses model(inputs) instead of model(**inputs).
                 """
                 model.eval()
-                
+
                 with torch.no_grad():
                     # GR00T expects inputs as a dict, not unpacked kwargs
                     outputs = model(inputs)
                     loss = outputs.get("loss", None)
-                
+
                 # Return (loss, logits, labels) format expected by Trainer
                 # For GR00T, we only return loss as we don't have standard logits/labels
                 return (loss, None, None)
-        
+
         return CustomTrainer
 
 
@@ -259,7 +259,7 @@ class DualBrainTrainerWithEval:
 
 class TrainRunnerWithValidation(TrainRunner):
     """Extended TrainRunner that supports validation with Subset datasets."""
-    
+
     def create_trainer_with_eval(
         self,
         model,
@@ -272,7 +272,7 @@ class TrainRunnerWithValidation(TrainRunner):
         """Create trainer with optional eval_dataset support."""
         from gr00t.experiment.trainer import DualBrainTrainer
         from gr00t.utils.experiment import CheckpointFormatCallback
-        
+
         # Use custom trainer that properly handles GR00T evaluation
         if eval_dataset is not None:
             CustomTrainer = DualBrainTrainerWithEval.create(DualBrainTrainer)
@@ -294,14 +294,14 @@ class TrainRunnerWithValidation(TrainRunner):
                 data_collator=data_collator,
                 compute_dtype=compute_dtype,
             )
-        
+
         # Add checkpoint format callback
         run_name = training_args.run_name
         ckpt_format_callback = CheckpointFormatCallback(
             run_name=run_name, exp_cfg_dir=self.exp_cfg_dir
         )
         trainer.add_callback(ckpt_format_callback)
-        
+
         # Log dataloader information
         train_dl_len = len(trainer.get_train_dataloader())
         print(
@@ -311,7 +311,7 @@ class TrainRunnerWithValidation(TrainRunner):
             flush=True,
         )
         return trainer
-    
+
     def __init__(
         self,
         model,
@@ -323,18 +323,18 @@ class TrainRunnerWithValidation(TrainRunner):
         original_dataset=None,  # Original dataset for metadata
     ):
         from torch.utils.data import Subset
-        
+
         # Store for later use
         self._eval_dataset = eval_dataset
         self._val_config = val_config
         self._original_dataset = original_dataset
-        
+
         # If train_dataset is a Subset, we need to handle metadata specially
         # Extract original dataset for metadata
         if isinstance(train_dataset, Subset) and original_dataset is None:
             original_dataset = train_dataset.dataset
             self._original_dataset = original_dataset
-        
+
         # Override the metadata writing logic by temporarily replacing the dataset
         # We'll write metadata from the original dataset, not the Subset
         self.training_args = training_args
@@ -343,7 +343,7 @@ class TrainRunnerWithValidation(TrainRunner):
         self.exp_cfg_dir.mkdir(parents=True, exist_ok=True)
         self.resume_from_checkpoint = resume_from_checkpoint
         self.train_dataset = train_dataset
-        
+
         # Set up run name
         training_args.run_name = (
             training_args.output_dir.split("/")[-1]
@@ -351,14 +351,16 @@ class TrainRunnerWithValidation(TrainRunner):
             else training_args.run_name
         )
         print(f"Run name: {training_args.run_name}")
-        
+
         from gr00t.model.transforms import DefaultDataCollator
+
         data_collator = DefaultDataCollator()
-        
+
         from transformers import set_seed
+
         compute_dtype = torch.float16 if training_args.bf16 else torch.float32
         set_seed(training_args.seed)
-        
+
         # Create trainer with eval_dataset if validation is enabled
         trainer = self.create_trainer_with_eval(
             model=model,
@@ -369,7 +371,7 @@ class TrainRunnerWithValidation(TrainRunner):
             compute_dtype=compute_dtype,
         )
         self.trainer = trainer
-        
+
         # Write metadata using the original dataset (not Subset)
         self.rank = int(os.environ.get("RANK", 0))
         if self.rank == 0:
@@ -377,10 +379,10 @@ class TrainRunnerWithValidation(TrainRunner):
             if os.path.exists(self.exp_cfg_dir / "metadata.json"):
                 with open(self.exp_cfg_dir / "metadata.json", "r") as f:
                     metadata_json = json.load(f)
-            
+
             # Use original dataset for metadata
             metadata_source = original_dataset if original_dataset else train_dataset
-            
+
             if isinstance(metadata_source, LeRobotSingleDataset):
                 metadata_json.update(
                     {metadata_source.tag: metadata_source.metadata.model_dump(mode="json")}
@@ -400,10 +402,10 @@ class TrainRunnerWithValidation(TrainRunner):
                         {inner_dataset.tag: inner_dataset.metadata.model_dump(mode="json")}
                     )
             # Skip metadata writing if we can't determine the type
-            
+
             with open(self.exp_cfg_dir / "metadata.json", "w") as f:
                 json.dump(metadata_json, f, indent=4)
-        
+
         # Set up reporting
         report_to = training_args.report_to
         if report_to == "wandb":
@@ -414,7 +416,7 @@ class TrainRunnerWithValidation(TrainRunner):
                 if runtime_id:
                     os.environ["WANDB_RUN_ID"] = runtime_id
             os.environ["WANDB_DIR"] = training_args.output_dir
-            
+
             wandb_config_file = self.output_dir / "wandb_config.json"
             with open(wandb_config_file, "w") as f:
                 json.dump(
@@ -432,7 +434,7 @@ class TrainRunnerWithValidation(TrainRunner):
             tensorboard_dir.mkdir(parents=True, exist_ok=True)
             print(f"TensorBoard logs will be saved to: {tensorboard_dir}")
             training_args.report_to = ["tensorboard"]
-        
+
         # Add validation callback (eval_dataset already passed to trainer)
         if eval_dataset is not None and val_config and val_config.enable_validation:
             self.trainer.add_callback(ValidationCallback(training_args.output_dir))
@@ -446,7 +448,7 @@ class TrainRunnerWithValidation(TrainRunner):
 
 def main(config: ArgsConfig):
     """Main training function with validation support."""
-    
+
     # Create validation config
     val_config = ValidationConfig(
         enable_validation=config.enable_validation,
@@ -455,7 +457,7 @@ def main(config: ArgsConfig):
         eval_on_start=config.eval_on_start,
         val_seed=config.val_seed,
     )
-    
+
     if val_config.enable_validation:
         print("\n" + "=" * 50)
         print("🔍 VALIDATION ENABLED")
@@ -464,7 +466,7 @@ def main(config: ArgsConfig):
         print(f"  Eval every: {val_config.eval_steps} steps")
         print(f"  Val seed: {val_config.val_seed}")
         print("=" * 50 + "\n")
-    
+
     # ------------ step 1: load dataset ------------
     embodiment_tag = EmbodimentTag(config.embodiment_tag)
 
@@ -495,10 +497,7 @@ def main(config: ArgsConfig):
             single_datasets.append(dataset)
 
         full_dataset = LeRobotMixtureDataset(
-            data_mixture=[
-                (dataset, 1.0)
-                for dataset in single_datasets
-            ],
+            data_mixture=[(dataset, 1.0) for dataset in single_datasets],
             mode="train",
             balance_dataset_weights=config.balance_dataset_weights,
             balance_trajectory_weights=config.balance_trajectory_weights,
@@ -705,4 +704,3 @@ if __name__ == "__main__":
             env = os.environ.copy()
             env["IS_TORCHRUN"] = "1"
             sys.exit(subprocess.run(cmd, env=env).returncode)
-
