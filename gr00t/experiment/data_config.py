@@ -889,8 +889,9 @@ class LiberoDataConfig:
         return ComposedModalityTransform(transforms=transforms)
 
 
-class LiberoAH1DataConfig(LiberoDataConfig): #action chunk size = 1 (for training)
+class LiberoAH1DataConfig(LiberoDataConfig):  # action chunk size = 1 (for training)
     """LiberoDataConfig with action_horizon=1 (predict 1 action step at a time)."""
+
     action_indices = [0]
 
 
