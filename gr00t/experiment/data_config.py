@@ -889,6 +889,11 @@ class LiberoDataConfig:
         return ComposedModalityTransform(transforms=transforms)
 
 
+class LiberoAH1DataConfig(LiberoDataConfig): #action chunk size = 1 (for training)
+    """LiberoDataConfig with action_horizon=1 (predict 1 action step at a time)."""
+    action_indices = [0]
+
+
 class LiberoNoisyDataConfig(LiberoDataConfig):
     def transform(self):
         # Start from the base LIBERO transforms
@@ -1148,6 +1153,7 @@ DATA_CONFIG_MAP = {
     "oxe_droid": OxeDroidDataConfig(),
     "agibot_genie1": AgibotGenie1DataConfig(),
     "libero": LiberoDataConfig(),
+    "libero_ah1": LiberoAH1DataConfig(),
     "libero_noisy": LiberoNoisyDataConfig(),
     "libero_noisy_02": LiberoNoisy02DataConfig(),
     "libero_noisy_mixed": LiberoNoisyMixedDataConfig(),
