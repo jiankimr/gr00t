@@ -1,9 +1,16 @@
-# pip freeze output from gr00t conda environment (Python 3.10, CUDA 12.4)
-# Base setup: conda create -n gr00t python=3.10 && pip install -e .[base] && pip install --no-build-isolation flash-attn==2.7.1.post4
-# See Isaac-GR00T/README.md for full installation instructions.
+# pip freeze — gr00t conda environment (Python 3.10, CUDA 12.4, torch 2.5.1)
+# See conda_env_setup.md for full installation instructions.
 #
-# NOTE: gr00t package itself is installed via `pip install -e .` from the Isaac-GR00T repo.
-# NOTE: fms-dgt (see bottom) must be installed separately from its source repo.
+# 설치 순서 (검증 완료):
+#   1) pip install torch==2.5.1 torchvision==0.20.1       ← deps 포함 (nvidia-cu12 자동 설치)
+#   2) grep -v flash-attn requirements.txt | pip install --no-deps -r /dev/stdin
+#   3) pip install -e . --no-deps                          ← gr00t 패키지 등록
+#   4) pip install --no-build-isolation flash-attn==2.7.1.post4  ← nvcc 필요 (GPU 노드에서 실행)
+#
+# 주의:
+#   - flash-attn은 빌드 시 torch + nvcc가 필요하므로 이 파일에서 제외함 (아래 주석 참고)
+#   - --no-deps 필수: lerobot==0.4.1이 accelerate>=1.10.0을 요구하나 실제로는 1.2.1로 동작함
+#   - fms-dgt는 별도 소스 설치 필요 (파일 하단 주석 참고)
 about-time==4.2.1
 absl-py==2.3.1
 accelerate==1.2.1
@@ -58,7 +65,7 @@ Farama-Notifications==0.0.4
 fastparquet==2024.11.0
 fastrlock==0.8.3
 filelock==3.18.0
-flash-attn==2.7.1.post4
+# flash-attn==2.7.1.post4  ← 별도 설치: pip install --no-build-isolation flash-attn==2.7.1.post4 (nvcc 필요)
 flatbuffers==25.2.10
 fonttools==4.60.1
 frozenlist==1.7.0
