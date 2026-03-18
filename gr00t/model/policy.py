@@ -70,6 +70,7 @@ class Gr00tPolicy(BasePolicy):
         modality_transform: ComposedModalityTransform,
         denoising_steps: Optional[int] = None,
         device: Union[int, str] = "cuda" if torch.cuda.is_available() else "cpu",
+        checkpoint_subfolder: Optional[str] = None,
     ):
         """
         Initialize the Gr00tPolicy.
@@ -81,6 +82,9 @@ class Gr00tPolicy(BasePolicy):
             embodiment_tag (Union[str, EmbodimentTag]): The embodiment tag for the model.
             denoising_steps: Number of denoising steps to use for the action head.
             device (Union[int, str]): Device to run the model on.
+            checkpoint_subfolder (Optional[str]): Subfolder within the HF repo containing the
+                checkpoint weights (e.g. "checkpoint-20520"). When set, model weights are loaded
+                from this subfolder while experiment_cfg/metadata is loaded from the repo root.
         """
         try:
             # NOTE(YL) this returns the local path to the model which is normally
@@ -104,9 +108,16 @@ class Gr00tPolicy(BasePolicy):
         else:
             self.embodiment_tag = embodiment_tag
 
+        # When checkpoint_subfolder is given, weights live in the subfolder
+        # but experiment_cfg/metadata.json stays at the repo root.
+        if checkpoint_subfolder is not None:
+            weights_path = str(self.model_path / checkpoint_subfolder)
+        else:
+            weights_path = model_path
+
         # Load model
-        self._load_model(model_path)
-        # Load transforms
+        self._load_model(weights_path)
+        # Load transforms (always from repo root)
         self._load_metadata(self.model_path / "experiment_cfg")
         # Load horizons
         self._load_horizons()

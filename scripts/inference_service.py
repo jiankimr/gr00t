@@ -72,7 +72,11 @@ class ArgsConfig:
     """Command line arguments for the inference service."""
 
     model_path: str = "nvidia/GR00T-N1.5-3B"
-    """Path to the model checkpoint directory."""
+    """Path to the model checkpoint directory or HuggingFace repo id."""
+
+    checkpoint_subfolder: str = None
+    """Subfolder within the HF repo containing checkpoint weights (e.g. "checkpoint-20520").
+    When set, model weights are loaded from this subfolder while metadata is loaded from the repo root."""
 
     embodiment_tag: Literal[tuple(EMBODIMENT_TAG_MAPPING.keys())] = "gr1"
     """The embodiment tag for the model."""
@@ -190,6 +194,7 @@ def main(args: ArgsConfig):
             modality_transform=modality_transform,
             embodiment_tag=args.embodiment_tag,
             denoising_steps=args.denoising_steps,
+            checkpoint_subfolder=args.checkpoint_subfolder,
         )
 
         # Setup TensorRT if requested

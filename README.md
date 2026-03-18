@@ -227,7 +227,71 @@ python scripts/inference_service.py --model-path nvidia/GR00T-N1.5-3B --server
 python scripts/inference_service.py  --client
 ```
 
-### 2.2 Inference with Python TensorRT (Optional)
+### 2.2 Inference with HuggingFace Fine-tuned Checkpoints (Subfolder)
+
+If your HuggingFace repo contains multiple checkpoint subdirectories (e.g. from training), you can load a specific checkpoint using the `--checkpoint-subfolder` flag.
+
+**HuggingFace repo structure example:**
+```
+jiankimr/gr00t_franka_peach_50ep/
+├── experiment_cfg/
+│   └── metadata.json          # must be at repo root
+├── checkpoint-20520/
+│   ├── config.json
+│   └── model.safetensors
+├── checkpoint-25000/
+│   ├── config.json
+│   └── model.safetensors
+└── ...
+```
+
+**With subfolder (specific checkpoint):**
+```bash
+# server — loads weights from checkpoint-20520/ subfolder
+python scripts/inference_service.py --server \
+    --model-path jiankimr/gr00t_franka_peach_50ep \
+    --checkpoint-subfolder checkpoint-20520 \
+    --embodiment-tag new_embodiment \
+    --data-config <YOUR_DATA_CONFIG>
+```
+
+**Without subfolder (weights at repo root, same as before):**
+```bash
+# server — loads weights from repo root (default behavior)
+python scripts/inference_service.py --server \
+    --model-path nvidia/GR00T-N1.5-3B \
+    --embodiment-tag gr1 \
+    --data-config fourier_gr1_arms_waist
+```
+
+You can also use `checkpoint_subfolder` programmatically with `Gr00tPolicy`:
+
+```python
+from gr00t.model.policy import Gr00tPolicy
+
+# With subfolder
+policy = Gr00tPolicy(
+    model_path="jiankimr/gr00t_franka_peach_50ep",
+    modality_config=modality_config,
+    modality_transform=transforms,
+    embodiment_tag="new_embodiment",
+    denoising_steps=4,
+    checkpoint_subfolder="checkpoint-20520",  # load specific checkpoint
+)
+
+# Without subfolder (default, same as original code)
+policy = Gr00tPolicy(
+    model_path="nvidia/GR00T-N1.5-3B",
+    modality_config=modality_config,
+    modality_transform=transforms,
+    embodiment_tag="gr1",
+    denoising_steps=4,
+)
+```
+
+> **Note:** `experiment_cfg/metadata.json` must always be at the HuggingFace repo root, not inside the checkpoint subfolder. The subfolder only needs model weight files (`config.json`, `model.safetensors`, etc.).
+
+### 2.3 Inference with Python TensorRT (Optional)
 
 To inference with ONNX and TensorRT, please refer to [`deployment_scripts/README.md`](deployment_scripts/README.md).
 
@@ -284,11 +348,20 @@ To conduct an offline evaluation of the model, we provide a script that evaluate
 
 Or you can run the newly trained model in client-server mode.
 
-Run the newly trained model
+Run the newly trained model (weights at repo root):
 ```bash
 python scripts/inference_service.py --server \
     --model-path <MODEL_PATH> \
-    --embodiment-tag new_embodiment
+    --embodiment-tag new_embodiment \
+    --data-config <DATA_CONFIG>
+```
+
+Run a specific checkpoint from an HF repo with subdirectories (see [Section 2.2](#22-inference-with-huggingface-fine-tuned-checkpoints-subfolder)):
+```bash
+python scripts/inference_service.py --server \
+    --model-path <HF_REPO_ID> \
+    --checkpoint-subfolder <CHECKPOINT_SUBFOLDER> \
+    --embodiment-tag new_embodiment \
     --data-config <DATA_CONFIG>
 ```
 
